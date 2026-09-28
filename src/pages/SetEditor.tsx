@@ -1,0 +1,222 @@
+import { useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
+import { useLiveQuery } from "dexie-react-hooks";
+import { db, newId, type Card } from "../lib/db";
+import {
+  addCardsToSet,
+  downloadCSV,
+  downloadJSON,
+  exportSet,
+  parsePastedCards,
+  type ParseDelimiters,
+} from "../lib/importExport";
+import { CardCreator, type NewCardFields } from "../components/CardCreator";
+import { CardListItem } from "../components/CardListItem";
+
+export function SetEditor() {
+  const { setId } = useParams<{ setId: string }>();
+  const navigate = useNavigate();
+  const set = useLiveQuery(() => (setId ? db.sets.get(setId) : undefined), [setId]);
+  const cards = useLiveQuery(
+    () => (setId ? db.cards.where("setId").equals(setId).sortBy("order") : []),
+    [setId]
+  );
+
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const [pasteText, setPasteText] = useState("");
+  const [termSeparator, setTermSeparator] = useState("auto");
+  const [cardSeparator, setCardSeparator] = useState("auto");
+  const delimiters: ParseDelimiters = { termSeparator, cardSeparator };
+
+  if (set === undefined) return <p>Loading…</p>;
+  if (set === null || !setId) return <p>Set not found.</p>;
+
+  async function updateSet(fields: Partial<{ title: string; description: string }>) {
+    await db.sets.update(setId!, { ...fields, updatedAt: Date.now() });
+  }
+
+  async function createCard(fields: NewCardFields) {
+    const order = cards?.length ?? 0;
+    await db.cards.add({
+      id: newId(),
+      setId: setId!,
+      ...fields,
+      order,
+      createdAt: Date.now(),
+    });
+    await db.sets.update(setId!, { updatedAt: Date.now() });
+  }
+
+  async function updateCard(id: string, fields: Partial<Card>) {
+    await db.cards.update(id, fields);
+    await db.sets.update(setId!, { updatedAt: Date.now() });
+  }
+
+  async function deleteCard(id: string) {
+    await db.cards.delete(id);
+    await db.sets.update(setId!, { updatedAt: Date.now() });
+  }
+
+  async function handlePasteImport() {
+    const entries = parsePastedCards(pasteText, delimiters);
+    if (entries.length === 0) return;
+    await addCardsToSet(setId!, entries);
+    setPasteText("");
+    setPasteOpen(false);
+  }
+
+  async function handleExportJSON() {
+    const data = await exportSet(setId!);
+    downloadJSON(data, `${data.sets[0]?.title || "flashcards"}.json`);
+  }
+
+  async function handleExportCSV() {
+    if (!cards) return;
+    downloadCSV(set?.title ?? "flashcards", cards);
+  }
+
+  return (
+    <div>
+      <button
+        onClick={() => navigate(`/sets/${setId}`)}
+        className="text-sm text-gray-500 hover:underline mb-4"
+      >
+        ← Back to set
+      </button>
+
+      <input
+        value={set.title}
+        onChange={(e) => updateSet({ title: e.target.value })}
+        placeholder="Set title"
+        className="text-2xl font-bold w-full bg-transparent outline-none mb-2 border-b border-transparent focus:border-gray-300 dark:focus:border-gray-700"
+      />
+      <textarea
+        value={set.description}
+        onChange={(e) => updateSet({ description: e.target.value })}
+        placeholder="Description (optional)"
+        rows={2}
+        className="w-full bg-transparent outline-none text-sm text-gray-500 dark:text-gray-400 resize-none mb-4"
+      />
+
+      <div className="flex gap-2 flex-wrap mb-6">
+        <button
+          onClick={() => setPasteOpen((v) => !v)}
+          className="px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-700 text-sm hover:bg-gray-100 dark:hover:bg-gray-800"
+        >
+          Paste import
+        </button>
+        <button
+          onClick={handleExportJSON}
+          className="px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-700 text-sm hover:bg-gray-100 dark:hover:bg-gray-800"
+        >
+          Export JSON
+        </button>
+        <button
+          onClick={handleExportCSV}
+          className="px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-700 text-sm hover:bg-gray-100 dark:hover:bg-gray-800"
+        >
+          Export CSV
+        </button>
+      </div>
+
+      {pasteOpen && (
+        <div className="mb-6 rounded-xl border border-gray-200 dark:border-gray-800 p-4">
+          <p className="text-sm text-gray-500 dark:text-gray-400 mb-2">
+            Paste one card per line: <code>term,definition</code> or{" "}
+            <code>term&lt;tab&gt;definition</code> (Quizlet-style paste works too).
+          </p>
+
+          <div className="flex gap-3 flex-wrap mb-3 text-sm">
+            <label className="flex items-center gap-2">
+              <span className="text-gray-500 dark:text-gray-400">Between term &amp; definition:</span>
+              <select
+                value={termSeparator}
+                onChange={(e) => setTermSeparator(e.target.value)}
+                className="rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 px-2 py-1"
+              >
+                <option value="auto">Auto (comma or tab)</option>
+                <option value=",">Comma ( , )</option>
+                <option value="\t">Tab</option>
+                <option value=";">Semicolon ( ; )</option>
+                <option value="|">Pipe ( | )</option>
+                <option value="custom">Custom…</option>
+              </select>
+              {termSeparator === "custom" && (
+                <input
+                  autoFocus
+                  placeholder="e.g. ::"
+                  onChange={(e) => setTermSeparator(e.target.value)}
+                  className="w-20 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 px-2 py-1"
+                />
+              )}
+            </label>
+
+            <label className="flex items-center gap-2">
+              <span className="text-gray-500 dark:text-gray-400">Between cards:</span>
+              <select
+                value={cardSeparator}
+                onChange={(e) => setCardSeparator(e.target.value)}
+                className="rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 px-2 py-1"
+              >
+                <option value="auto">New line</option>
+                <option value=";">Semicolon ( ; )</option>
+                <option value="|">Pipe ( | )</option>
+                <option value="custom">Custom…</option>
+              </select>
+              {cardSeparator === "custom" && (
+                <input
+                  autoFocus
+                  placeholder="e.g. ///"
+                  onChange={(e) => setCardSeparator(e.target.value)}
+                  className="w-20 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 px-2 py-1"
+                />
+              )}
+            </label>
+          </div>
+
+          <textarea
+            value={pasteText}
+            onChange={(e) => setPasteText(e.target.value)}
+            rows={6}
+            placeholder={"Mitochondria,Powerhouse of the cell\nOsmosis,Movement of water across a membrane"}
+            className="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 p-2 text-sm font-mono outline-none"
+          />
+          <div className="flex gap-2 mt-2">
+            <button
+              onClick={handlePasteImport}
+              className="px-3 py-1.5 rounded-lg bg-sky-500 text-white text-sm hover:bg-sky-600"
+            >
+              Add {parsePastedCards(pasteText, delimiters).length || ""} card(s)
+            </button>
+            <button
+              onClick={() => setPasteOpen(false)}
+              className="px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-700 text-sm"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      <CardCreator onCreate={createCard} />
+
+      <div className="space-y-4">
+        {cards?.map((card, i) => (
+          <CardListItem
+            key={card.id}
+            index={i}
+            card={card}
+            onChange={(fields) => updateCard(card.id, fields)}
+            onDelete={() => deleteCard(card.id)}
+          />
+        ))}
+      </div>
+
+      {cards?.length === 0 && (
+        <p className="text-center text-gray-500 dark:text-gray-400 py-10">
+          No cards yet. Use the creator above or paste a list.
+        </p>
+      )}
+    </div>
+  );
+}
